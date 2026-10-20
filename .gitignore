@@ -227,3 +227,5 @@ __marimo__/
 # raw experiment outputs (keep plots and final summaries, not every test run)
 results/*
 !results/.gitkeep
+
+controller_decisions.csv
