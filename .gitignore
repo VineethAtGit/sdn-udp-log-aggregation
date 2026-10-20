@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# editor files
+.vscode/
+.idea/
+*.swp
+
+# raw experiment outputs (keep plots and final summaries, not every test run)
+results/*
+!results/.gitkeep
