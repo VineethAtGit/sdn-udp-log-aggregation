@@ -1,0 +1,192 @@
+> Phase 0: Health check
+
+source ~/ryu-env/bin/activate            # T1: enter the Ryu environment (prompt shows (ryu-env))
+ryu-manager --version                    # T1: should print ryu-manager 4.34
+sudo systemctl status openvswitch-switch # either: should say "active"
+cd ~/mininet/Documents/CN_mini_project/sdn-udp-log-aggregation   # both terminals: go to the repo
+git branch                               # should show testing-Vineeth or main
+
+-------------------------------------------------------------------------------------------------------
+
+> Phase 1: Save and merge your code (once)
+
+rm -f controller_decisions.csv           # delete the leftover file from the old controller
+git status                               # check: only the 4 expected files
+git add controller/ topology/
+git commit -m "Align controller and topology with contract; add queues and baseline"
+git push -u origin testing-Vineeth
+
+
+git checkout main
+git pull
+
+
+cd ~ && git clone https://github.com/VineethAtGit/sdn-udp-log-aggregation.git demo-check
+cd demo-check && ls app controller topology docs
+cd ~/mininet/Documents/CN_mini_project/sdn-udp-log-aggregation   # go back
+rm -rf ~/demo-check
+
+-------------------------------------------------------------------------------------------------------
+
+> Phase 2: Demo Part A: connectivity and flows
+
+--Use when: you start the demo and want to show the network and rules.
+
+# T1: start the dynamic controller
+mkdir -p results/demo_nocong
+RUN_ID=demo_nocong ryu-manager controller/sdn_controller.py
+
+--Wait for switch connected: dpid=1 after step 2.
+
+# T2: build the network and open the Mininet prompt
+sudo python3 topology/topo.py
+
+--At the mininet> prompt:
+
+pingall
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+sh ovs-ofctl -O OpenFlow13 dump-flows s2
+sh ovs-ofctl -O OpenFlow13 queue-stats s1
+
+>> pingall: shows 0% dropped, so all hosts reach each other through the SDN network.
+>> dump-flows: shows the severity rules for ports 5001, 5002 and 5003 (counters at 0 for now).
+>> queue-stats: shows queues 0, 1 and 2 exist on s1-eth6
+
+--------------------------------------------------------------------------------------------------------
+
+> Phase 3: Demo Part B: app with no congestion
+
+--Use when: you demonstrate the socket application working normally. Same Mininet session, paste this block:
+
+h5 python3 app/log_server.py --out results/demo_nocong --idle-timeout 5 > /tmp/srv.out 2>&1 &
+h1 python3 app/log_client.py --host-id h1 --server-ip 10.0.0.5 --rate 50 --duration 30 --out results/demo_nocong > /tmp/h1.out 2>&1 &
+h2 python3 app/log_client.py --host-id h2 --server-ip 10.0.0.5 --rate 50 --duration 30 --out results/demo_nocong > /tmp/h2.out 2>&1 &
+h3 python3 app/log_client.py --host-id h3 --server-ip 10.0.0.5 --rate 50 --duration 30 --out results/demo_nocong > /tmp/h3.out 2>&1 &
+h4 python3 app/log_client.py --host-id h4 --server-ip 10.0.0.5 --rate 50 --duration 30 --out results/demo_nocong > /tmp/h4.out 2>&1 &
+
+Wait about 40 seconds, then:
+
+sh cat /tmp/srv.out
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+sh ls results/demo_nocong
+sh head -5 results/demo_nocong/server_log.csv
+
+[Expected: 6000 sent and 6000 received, 0% loss, delay about 0.14 ms, the severity flows now counting packets, and the CSV files present]
+
+--Save the evidence:
+
+sh cp /tmp/srv.out results/demo_nocong/server_summary.txt
+sh ovs-ofctl -O OpenFlow13 dump-flows s1 > results/demo_nocong/flows_s1.txt
+
+----------------------------------------------------------------------------------------------------------
+
+> Phase 4: Demo Part C: baseline under congestion
+
+--Use when: you show that without SDN prioritization, all severities suffer equally.
+First reset: type exit in T2, press Ctrl+C in T1, then:
+
+# T2 (any terminal)
+sudo mn -c
+mkdir -p results/demo_baseline
+sudo chown -R $USER:$USER results
+
+# T1: baseline controller (first line must say mode=baseline)
+RUN_ID=demo_baseline ryu-manager controller/baseline_controller.py
+
+# T2
+sudo python3 topology/topo.py
+
+At the mininet> prompt:
+h5 iperf -s -u -p 5004 > /dev/null 2>&1 &
+h5 python3 app/log_server.py --out results/demo_baseline --idle-timeout 8 > /tmp/srv.out 2>&1 &
+h1 python3 app/log_client.py --host-id h1 --server-ip 10.0.0.5 --rate 50 --duration 40 --out results/demo_baseline > /tmp/h1.out 2>&1 &
+h2 python3 app/log_client.py --host-id h2 --server-ip 10.0.0.5 --rate 50 --duration 40 --out results/demo_baseline > /tmp/h2.out 2>&1 &
+h3 python3 app/log_client.py --host-id h3 --server-ip 10.0.0.5 --rate 50 --duration 40 --out results/demo_baseline > /tmp/h3.out 2>&1 &
+h4 python3 app/log_client.py --host-id h4 --server-ip 10.0.0.5 --rate 50 --duration 40 --out results/demo_baseline > /tmp/h4.out 2>&1 &
+h6 bash -c "sleep 5; iperf -u -c 10.0.0.5 -p 5004 -b 15M -t 30" > /tmp/flood.out 2>&1 &
+
+After about 55 seconds:
+
+sh cat /tmp/srv.out
+sh cp /tmp/srv.out results/demo_baseline/server_summary.txt
+
+[Expected: about 11 to 12% loss and 31 to 36 ms average delay for every severity.]
+
+-----------------------------------------------------------------------------------------------------------
+
+> Phase 5: Demo Part D: dynamic SDN under congestion (about 1 minute)
+
+Use when: you show the controller reacting and protecting the urgent logs.
+
+Reset: exit in T2, Ctrl+C in T1, then:
+
+
+sudo mn -c
+mkdir -p results/demo_dynamic
+sudo chown -R $USER:$USER results
+
+# T1: dynamic controller (first line must say mode=dynamic)
+RUN_ID=demo_dynamic ryu-manager controller/sdn_controller.py
+
+# T2
+sudo python3 topology/topo.py
+
+At the mininet> prompt, paste the same block as Phase 4, but with demo_dynamic in place of demo_baseline:
+
+h5 iperf -s -u -p 5004 > /dev/null 2>&1 &
+h5 python3 app/log_server.py --out results/demo_dynamic --idle-timeout 8 > /tmp/srv.out 2>&1 &
+h1 python3 app/log_client.py --host-id h1 --server-ip 10.0.0.5 --rate 50 --duration 40 --out results/demo_dynamic > /tmp/h1.out 2>&1 &
+h2 python3 app/log_client.py --host-id h2 --server-ip 10.0.0.5 --rate 50 --duration 40 --out results/demo_dynamic > /tmp/h2.out 2>&1 &
+h3 python3 app/log_client.py --host-id h3 --server-ip 10.0.0.5 --rate 50 --duration 40 --out results/demo_dynamic > /tmp/h3.out 2>&1 &
+h4 python3 app/log_client.py --host-id h4 --server-ip 10.0.0.5 --rate 50 --duration 40 --out results/demo_dynamic > /tmp/h4.out 2>&1 &
+h6 bash -c "sleep 5; iperf -u -c 10.0.0.5 -p 5004 -b 15M -t 30" > /tmp/flood.out 2>&1 &
+
+--While it runs (about 10 to 25 seconds after you start), show the rules appearing:
+
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+
+--After about 55 seconds:
+
+sh cat /tmp/srv.out
+sh grep -v STATS results/demo_dynamic/controller_log.csv
+sh ovs-ofctl -O OpenFlow13 queue-stats s1
+sh cp /tmp/srv.out results/demo_dynamic/server_summary.txt
+
+[Expected: CRITICAL and ERROR with about 2 to 3% loss and about 5 ms delay, the other severities at about 12 to 15% loss, a CONGESTION_ON and a CONGESTION_OFF line in the controller log, and queue 1 with 0 errors.]
+
+---------------------------------------------------------------------------------------------------------------
+
+Phase 6: End of session cleanup
+
+Use when: you finish a run or the demo.
+
+exit                                      # T2: leave the Mininet prompt
+
+
+# T1: Ctrl+C to stop the controller
+sudo mn -c                                # clear any leftover virtual network
+sudo ovs-vsctl --all destroy QoS          # remove leftover queue settings
+sudo ovs-vsctl --all destroy Queue
+sudo chown -R $USER:$USER results         # give your user ownership of the result files
+
+
+---------------------------------------------------------------------------------------------------------------
+
+Quick troubleshooting commands
+
+Permission denied writing results	[sudo chown -R $USER:$USER results]
+
+Old topology or errors on start	[sudo mn -c]
+
+Not sure which controller is running	[Look at its first lines for mode=baseline or mode=dynamic, or ps aux | grep ryu-manager]
+
+Kill a stuck controller	[pkill -f ryu-manager]
+
+A client or server printed nothing	[sh cat /tmp/h1.out (or /tmp/srv.out) at the Mininet prompt]
+
+Port number check	[sh ovs-ofctl -O OpenFlow13 show s1 (s1-eth6 should be port 6)]
+
+Queue setup check	[sh ovs-vsctl list qos and sh tc -s class show dev s1-eth6]
+
+
+-----------------------------------------------------------------------------------------------------------------
