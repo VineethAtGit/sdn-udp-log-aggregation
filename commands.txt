@@ -190,3 +190,12 @@ Queue setup check	[sh ovs-vsctl list qos and sh tc -s class show dev s1-eth6]
 
 
 -----------------------------------------------------------------------------------------------------------------
+
+> Running the robust test case : 
+
+sudo python3 experiments/run_experiments.py
+
+--and... after it runs,
+
+python3 experiments/aggregate.py
+python3 experiments/plot_results.py
