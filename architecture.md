@@ -123,8 +123,9 @@ loss within seconds and delay is bounded near 120 ms.
 
 - **Loss:** from the client's sent file versus the server's received log, per severity (exact, not estimated).
 - **Delay:** receive time minus send time; valid because all emulated hosts share one clock.
-- **Statistics reported:** average, 95th percentile and maximum delay, plus loss percentage, over 3 repeats per case.
-- **Controlled congestion:** flood of 12 Mbps (moderate) or 15 Mbps (heavy) starting 15 s into a 60 s run and lasting 30 s.
+- **Statistics reported:** average, 95th percentile and maximum delay, loss percentage and throughput, over 3 repeats per case.
+- **Throughput:** offered and delivered (goodput) log throughput in kbps from payload bytes, per severity and per second (`throughput.csv`); per-flow throughput measured by the controller (`flow_stats.csv`); total bottleneck throughput from port counters.
+- **Controlled congestion:** flood of 12 Mbps (moderate) or 15 Mbps (heavy) starting 7 s into a 30 s run and lasting 15 s.
 
 ## 9. Limitations
 

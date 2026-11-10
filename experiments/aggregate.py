@@ -48,13 +48,15 @@ def load_runs():
 
 def class_stats(per_sev, members):
     sent = sum(per_sev[s]["sent"] or 0 for s in members)
+    good = sum(per_sev[s].get("goodput_kbps") or 0 for s in members)
     recv = sum(per_sev[s]["received"] or 0 for s in members)
     loss = (sent - recv) / sent * 100.0 if sent else None
     weights = [(per_sev[s]["avg_delay_ms"], per_sev[s]["received"]) for s in members
                if per_sev[s]["avg_delay_ms"] is not None and per_sev[s]["received"]]
     tot = sum(w for _, w in weights)
     delay = sum(d * w for d, w in weights) / tot if tot else None
-    return {"sent": sent, "received": recv, "loss_pct": loss, "avg_delay_ms": delay}
+    return {"sent": sent, "received": recv, "loss_pct": loss, "avg_delay_ms": delay,
+            "goodput_kbps": good}
 
 
 def main():
@@ -66,12 +68,14 @@ def main():
     with open(os.path.join(OUT, "all_runs.csv"), "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["mode", "condition", "run", "severity", "sent", "received",
-                    "loss_pct", "avg_delay_ms", "p95_delay_ms", "max_delay_ms"])
+                    "loss_pct", "avg_delay_ms", "p95_delay_ms", "max_delay_ms",
+                    "offered_kbps", "goodput_kbps"])
         for r in runs:
             for s in SEVERITIES:
                 d = r["per_sev"][s]
                 w.writerow([r["mode"], r["cond"], r["run"], s, d["sent"], d["received"],
-                            d["loss_pct"], d["avg_delay_ms"], d["p95_delay_ms"], d["max_delay_ms"]])
+                            d["loss_pct"], d["avg_delay_ms"], d["p95_delay_ms"], d["max_delay_ms"],
+                            d.get("offered_kbps"), d.get("goodput_kbps")])
 
     rows = []
     for cond in CONDITIONS:
@@ -85,19 +89,24 @@ def main():
                 stats = [class_stats(r["per_sev"], members) for r in sel]
                 lm, ls = mean_std([x["loss_pct"] for x in stats])
                 dm, ds = mean_std([x["avg_delay_ms"] for x in stats])
+                gm, gs = mean_std([x["goodput_kbps"] for x in stats])
                 rows.append({"condition": cond, "mode": mode, "group": label, "runs": len(sel),
-                             "loss_mean": lm, "loss_std": ls, "delay_mean": dm, "delay_std": ds})
+                             "loss_mean": lm, "loss_std": ls, "delay_mean": dm, "delay_std": ds,
+                             "good_mean": gm, "good_std": gs})
 
     with open(os.path.join(OUT, "aggregate.csv"), "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["condition", "mode", "group", "runs", "loss_pct_mean", "loss_pct_std",
-                    "avg_delay_ms_mean", "avg_delay_ms_std"])
+                    "avg_delay_ms_mean", "avg_delay_ms_std",
+                    "goodput_kbps_mean", "goodput_kbps_std"])
         for r in rows:
             w.writerow([r["condition"], r["mode"], r["group"], r["runs"],
                         None if r["loss_mean"] is None else round(r["loss_mean"], 3),
                         None if r["loss_std"] is None else round(r["loss_std"], 3),
                         None if r["delay_mean"] is None else round(r["delay_mean"], 3),
-                        None if r["delay_std"] is None else round(r["delay_std"], 3)])
+                        None if r["delay_std"] is None else round(r["delay_std"], 3),
+                        None if r["good_mean"] is None else round(r["good_mean"], 2),
+                        None if r["good_std"] is None else round(r["good_std"], 2)])
 
     fmt = lambda m, s: "-" if m is None else f"{m:.1f} ± {s:.1f}"
     print("\n| Condition | Group | Baseline loss % | Dynamic loss % | Baseline delay ms | Dynamic delay ms |")
@@ -116,6 +125,20 @@ def main():
                   f"{fmt(d['loss_mean'], d['loss_std']) if d else '-'} | "
                   f"{fmt(b['delay_mean'], b['delay_std']) if b else '-'} | "
                   f"{fmt(d['delay_mean'], d['delay_std']) if d else '-'} |")
+    print("\nDelivered log throughput (kbps, payload bytes, mean ± std):")
+    print("| Condition | Group | Baseline kbps | Dynamic kbps |")
+    print("|---|---|---|---|")
+    for cond in CONDITIONS:
+        for label in SEVERITIES + ["HIGH(CRIT+ERR)", "LOW(WARN+INFO+DEBUG)"]:
+            b = next((r for r in rows if r["condition"] == cond and r["mode"] == "baseline"
+                      and r["group"] == label), None)
+            d = next((r for r in rows if r["condition"] == cond and r["mode"] == "dynamic"
+                      and r["group"] == label), None)
+            if not b and not d:
+                continue
+            print(f"| {cond} | {label} | "
+                  f"{fmt(b['good_mean'], b['good_std']) if b else '-'} | "
+                  f"{fmt(d['good_mean'], d['good_std']) if d else '-'} |")
     print(f"\nWrote {OUT}/all_runs.csv and aggregate.csv ({len(runs)} runs)")
 
 

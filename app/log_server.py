@@ -4,8 +4,8 @@ log_server.py - central UDP log server (runs on h5).
 
 Listens on one UDP socket per port (5001, 5002, 5003), one thread per socket.
 Every valid log is written to <out>/server_log.csv with the receive time and
-one-way delay. On exit it writes <out>/summary.json with per-severity
-received count, loss %, and delay statistics.
+one-way delay and size. On exit it writes <out>/summary.json (per-severity loss %, delay
+and throughput) and <out>/throughput.csv (delivered throughput per second per severity).
 
 Loss is computed from the clients' <out>/client_sent_<hostid>.csv files, so
 run the server and clients with the SAME --out directory (Mininet hosts share
@@ -28,7 +28,7 @@ import threading
 import time
 
 from common import (DEFAULT_OUT, LOG_PORTS, SERVER_FIELDS, SEVERITIES,
-                    decode_message)
+                    THROUGHPUT_FIELDS, decode_message)
 
 
 class LogServer:
@@ -81,7 +81,7 @@ class LogServer:
             delay_ms = (recv_time - send_time) * 1000.0
             with self.lock:
                 self.writer.writerow([f"{recv_time:.6f}", host_id, seq, severity,
-                                      f"{send_time:.6f}", f"{delay_ms:.3f}"])
+                                      f"{send_time:.6f}", f"{delay_ms:.3f}", len(data)])
                 self.received += 1
                 self.last_rx = time.monotonic()
 
@@ -130,12 +130,14 @@ def _percentile(sorted_vals, p):
 
 
 def _load_sent(out_dir):
-    """Return {severity: count} from client_sent_*.csv, or None if no files."""
+    """Return (counts, bytes, (t_min, t_max)) from client_sent_*.csv, or None if no files."""
     files = sorted(glob.glob(os.path.join(out_dir, "client_sent_*.csv")))
     if not files:
         return None
     seen = set()
     counts = {s: 0 for s in SEVERITIES}
+    sizes = {s: 0 for s in SEVERITIES}
+    times = []
     for path in files:
         with open(path, newline="") as f:
             for row in csv.DictReader(f):
@@ -144,24 +146,50 @@ def _load_sent(out_dir):
                     continue
                 seen.add(key)
                 counts[row["severity"]] = counts.get(row["severity"], 0) + 1
-    return counts
+                sizes[row["severity"]] = sizes.get(row["severity"], 0) + int(row.get("size_bytes") or 0)
+                times.append(float(row["send_time"]))
+    window = (min(times), max(times)) if times else None
+    return counts, sizes, window
+
+
+def _load_received(out_dir):
+    """Return deduplicated received rows as dicts with float/int fields."""
+    rows, seen = [], set()
+    path = os.path.join(out_dir, "server_log.csv")
+    if not os.path.exists(path):
+        return rows
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            key = (row["client_id"], row["seq"])
+            if key in seen:                     # UDP can duplicate; count once
+                continue
+            seen.add(key)
+            rows.append({"sev": row["severity"], "recv": float(row["recv_time"]),
+                         "delay": float(row["delay_ms"]),
+                         "size": int(row.get("size_bytes") or 0)})
+    return rows
 
 
 def summarize(out_dir, malformed=None):
     """Build summary.json content from server_log.csv + client_sent_*.csv."""
+    received = _load_received(out_dir)
     delays = {s: [] for s in SEVERITIES}
-    seen = set()
-    path = os.path.join(out_dir, "server_log.csv")
-    if os.path.exists(path):
-        with open(path, newline="") as f:
-            for row in csv.DictReader(f):
-                key = (row["client_id"], row["seq"])
-                if key in seen:                 # UDP can duplicate; count once
-                    continue
-                seen.add(key)
-                delays[row["severity"]].append(float(row["delay_ms"]))
+    rbytes = {s: 0 for s in SEVERITIES}
+    for r in received:
+        delays[r["sev"]].append(r["delay"])
+        rbytes[r["sev"]] += r["size"]
 
-    sent = _load_sent(out_dir)
+    loaded = _load_sent(out_dir)
+    sent, sent_bytes, window = (loaded if loaded else (None, None, None))
+
+    # throughput window: the clients' sending period (same window for offered and delivered)
+    if window and window[1] - window[0] > 0:
+        span = window[1] - window[0]
+    elif received:
+        span = max(r["recv"] for r in received) - min(r["recv"] for r in received)
+    else:
+        span = 0
+    span = max(span, 1.0)
 
     if malformed is None:                       # --summarize-only: reuse old value
         old = os.path.join(out_dir, "summary.json")
@@ -173,7 +201,10 @@ def summarize(out_dir, malformed=None):
             except (OSError, ValueError):
                 pass
 
-    def stats(sent_n, vals):
+    def kbps(nbytes):
+        return round(nbytes * 8.0 / 1000.0 / span, 2)
+
+    def stats(sent_n, sent_b, vals, recv_b):
         recv_n = len(vals)
         loss = None
         if sent_n:
@@ -186,24 +217,45 @@ def summarize(out_dir, malformed=None):
             "avg_delay_ms": round(sum(vs) / recv_n, 3) if recv_n else None,
             "p95_delay_ms": round(_percentile(vs, 95), 3) if recv_n else None,
             "max_delay_ms": round(vs[-1], 3) if recv_n else None,
+            "offered_kbps": kbps(sent_b) if sent_b else None,
+            "goodput_kbps": kbps(recv_b),
         }
 
-    per_sev = {s: stats(sent[s] if sent else None, delays[s]) for s in SEVERITIES}
+    per_sev = {s: stats(sent[s] if sent else None, sent_bytes[s] if sent else None,
+                        delays[s], rbytes[s]) for s in SEVERITIES}
     all_vals = [v for s in SEVERITIES for v in delays[s]]
-    overall = stats(sum(sent.values()) if sent else None, all_vals)
-    return {"malformed": malformed, "per_severity": per_sev, "overall": overall}
+    overall = stats(sum(sent.values()) if sent else None,
+                    sum(sent_bytes.values()) if sent else None,
+                    all_vals, sum(rbytes.values()))
+    return {"malformed": malformed, "throughput_window_s": round(span, 2),
+            "per_severity": per_sev, "overall": overall}
+
+
+def write_throughput(out_dir):
+    """Per-second delivered throughput per severity -> throughput.csv (1 s buckets)."""
+    buckets = {}
+    for r in _load_received(out_dir):
+        key = (int(r["recv"]), r["sev"])
+        n, b = buckets.get(key, (0, 0))
+        buckets[key] = (n + 1, b + r["size"])
+    with open(os.path.join(out_dir, "throughput.csv"), "w", newline="") as f:
+        w = csv.writer(f, lineterminator="\n")
+        w.writerow(THROUGHPUT_FIELDS)
+        for (sec, sev) in sorted(buckets):
+            n, b = buckets[(sec, sev)]
+            w.writerow([sec, sev, n, b, round(b * 8.0 / 1000.0, 2)])
 
 
 def print_summary(summary):
     print("\n=== Summary ===")
-    print(f"{'severity':<10}{'sent':>8}{'recv':>8}{'loss%':>9}"
-          f"{'avg ms':>10}{'p95 ms':>10}{'max ms':>10}")
+    print(f"{'severity':<10}{'sent':>7}{'recv':>7}{'loss%':>8}{'avg ms':>9}{'p95 ms':>9}"
+          f"{'max ms':>9}{'offer kbps':>12}{'good kbps':>11}")
     rows = list(summary["per_severity"].items()) + [("OVERALL", summary["overall"])]
+    fmt = lambda v: "-" if v is None else v
     for name, s in rows:
-        fmt = lambda v: "-" if v is None else v
-        print(f"{name:<10}{fmt(s['sent']):>8}{s['received']:>8}{fmt(s['loss_pct']):>9}"
-              f"{fmt(s['avg_delay_ms']):>10}{fmt(s['p95_delay_ms']):>10}"
-              f"{fmt(s['max_delay_ms']):>10}")
+        print(f"{name:<10}{fmt(s['sent']):>7}{s['received']:>7}{fmt(s['loss_pct']):>8}"
+              f"{fmt(s['avg_delay_ms']):>9}{fmt(s['p95_delay_ms']):>9}{fmt(s['max_delay_ms']):>9}"
+              f"{fmt(s.get('offered_kbps')):>12}{fmt(s.get('goodput_kbps')):>11}")
     print(f"malformed datagrams discarded: {summary['malformed']}", flush=True)
 
 
@@ -229,6 +281,7 @@ def main():
     if args.summarize_only:
         summary = summarize(args.out)
         write_summary(args.out, summary)
+        write_throughput(args.out)
         print_summary(summary)
         return 0
 
@@ -253,6 +306,7 @@ def main():
 
     summary = summarize(args.out, malformed=server.malformed)
     write_summary(args.out, summary)
+    write_throughput(args.out)
     print_summary(summary)
     return 0
 

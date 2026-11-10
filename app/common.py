@@ -28,8 +28,9 @@ DEFAULT_MIX = "CRITICAL:10,ERROR:10,WARNING:20,INFO:40,DEBUG:20"
 DEFAULT_OUT = "results/tmp"
 
 # --- CSV columns (contract section 6) ---------------------------------------
-SERVER_FIELDS = ["recv_time", "client_id", "seq", "severity", "send_time", "delay_ms"]
-SENT_FIELDS = ["client_id", "seq", "severity", "send_time"]
+SERVER_FIELDS = ["recv_time", "client_id", "seq", "severity", "send_time", "delay_ms", "size_bytes"]
+SENT_FIELDS = ["client_id", "seq", "severity", "send_time", "size_bytes"]
+THROUGHPUT_FIELDS = ["time", "severity", "messages", "bytes", "throughput_kbps"]
 
 
 def encode_message(seq, timestamp, host_id, severity, message):

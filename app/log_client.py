@@ -111,7 +111,7 @@ def main():
                     print(f"[{args.host_id}] send error #{errors}: {e}",
                           file=sys.stderr, flush=True)
             else:
-                writer.writerow([args.host_id, seq, severity, f"{ts:.6f}"])
+                writer.writerow([args.host_id, seq, severity, f"{ts:.6f}", len(data)])
                 sent_by_sev[severity] += 1
                 seq += 1
                 if seq % 200 == 0:
