@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 baseline_controller.py - the comparison baseline (contract section 4).
 
@@ -12,7 +13,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tmp2.sdn_controller import SeveritySDNController  # noqa: E402
+from sdn_controller import SeveritySDNController  # noqa: E402
 
 
 class BaselineController(SeveritySDNController):
