@@ -65,15 +65,17 @@ Check the environment: `sudo mn --test pingall` should report 0 % dropped.
 Runs every experiment with a fresh controller and network, then collect results:
 
 ```bash
-sudo python3 experiments/run_experiments.py --runs 1 --conditions heavy   # quick check (~3 min)
-sudo python3 experiments/run_experiments.py                               # full matrix (~30 min)
+sudo python3 experiments/run_experiments.py --profile demo   # baseline vs dynamic under heavy congestion (~2 min)
+sudo python3 experiments/run_experiments.py --runs 2         # faster matrix, 2 repeats (~10 min)
+sudo python3 experiments/run_experiments.py                  # full matrix, 3 repeats (~15 min)
 python3 experiments/aggregate.py                                          # tables -> docs/results/
 python3 experiments/plot_results.py                                       # figures -> docs/figures/
 ```
 
 The matrix is 3 conditions (`none`, `moderate` = 12 Mbps flood, `heavy` = 15 Mbps flood) x
-2 modes (`baseline`, `dynamic`) x 3 repeats. Each run lasts 60 s; the flood is a burst from
-t = 15 s to t = 45 s.
+2 modes (`baseline`, `dynamic`) x 3 repeats. Each run lasts 30 s; the flood is a burst from
+t = 7 s to t = 22 s. The server is stopped 1.5 s after the clients finish, so no time is
+spent waiting on timeouts.
 
 ### B. Manual (for demos and debugging)
 
@@ -106,11 +108,12 @@ Always use a new `results/<name>` folder per run, and stop the old controller be
 
 | File | Content |
 |---|---|
-| `server_log.csv` | `recv_time, client_id, seq, severity, send_time, delay_ms` |
-| `client_sent_<host>.csv` | every message actually sent (used to compute loss) |
-| `summary.json` | per-severity sent, received, loss %, average / p95 / max delay |
+| `server_log.csv` | `recv_time, client_id, seq, severity, send_time, delay_ms, size_bytes` |
+| `client_sent_<host>.csv` | every message actually sent, with its size (used for loss and offered throughput) |
+| `summary.json` | per-severity sent, received, loss %, average / p95 / max delay, offered and delivered (goodput) throughput in kbps |
+| `throughput.csv` | delivered log throughput per second per severity: `time, severity, messages, bytes, throughput_kbps` |
 | `controller_log.csv` | `time, event, utilization, action` (STATS every second, congestion decisions) |
-| `flow_stats.csv` | per-severity flow packet and byte counters over time |
+| `flow_stats.csv` | per-severity flow counters over time: `time, dpid, udp_dst, priority, packets, bytes, kbps` (throughput measured by the network) |
 
 ## Results
 
@@ -128,6 +131,11 @@ low-priority logs):
 
 ![Burst timeline](docs/figures/fig_burst_timeline.png)
 
+**Throughput over time** (total traffic through the bottleneck from controller statistics, and delivered
+throughput of high- and low-priority logs):
+
+![Throughput](docs/figures/fig_throughput.png)
+
 ### Findings
 
 <!-- TODO: after pasting the table, edit these to match the real numbers -->
@@ -144,6 +152,9 @@ low-priority logs):
 - The bottleneck is enforced in one place: an OVS HTB QoS on `s1-eth6` (10 Mbps, queue 1 high, queue 2 low,
   queue 0 default, 100-packet buffer).
 - Delay is measured as receive time minus send time; this is valid because all emulated hosts share one machine clock.
+- Throughput is reported three ways: offered and delivered log throughput (kbps of payload bytes, in `summary.json`
+  and `throughput.csv`), per-flow throughput measured by the controller (`flow_stats.csv`), and total bottleneck
+  throughput (`controller_log.csv`). Log traffic is small (about 0.2 Mbps), so the flood dominates the link.
 - Utilization is computed from the transmit counter of the bottleneck port; it can read slightly above 100 %
   when packets are dropped after being counted.
 - Results come from an emulated network inside a VM, so absolute numbers depend on the host machine; the

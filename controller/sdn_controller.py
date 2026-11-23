@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 sdn_controller.py - Ryu (OpenFlow 1.3) controller, written to docs/contract.md.
 
@@ -21,7 +22,7 @@ Behaviour (contract section 4):
 
 Outputs in results/<RUN_ID>/:
   controller_log.csv : time,event,utilization,action   (utilization in %)
-  flow_stats.csv     : time,dpid,udp_dst,priority,packets,bytes  (extra, per-severity counters)
+  flow_stats.csv     : time,dpid,udp_dst,priority,packets,bytes,kbps  (per-severity flow counters and throughput)
 """
 import os
 import time
@@ -75,6 +76,7 @@ class SeveritySDNController(app_manager.RyuApp):
         self.congested = False
         self.on_count = 0
         self.off_count = 0
+        self.prev_flow = {}
 
         out_dir = os.path.join(RESULTS_DIR, RUN_ID)
         os.makedirs(out_dir, exist_ok=True)
@@ -83,7 +85,7 @@ class SeveritySDNController(app_manager.RyuApp):
         with open(self.log_path, "w") as f:
             f.write("time,event,utilization,action\n")
         with open(self.flow_path, "w") as f:
-            f.write("time,dpid,udp_dst,priority,packets,bytes\n")
+            f.write("time,dpid,udp_dst,priority,packets,bytes,kbps\n")
 
         print(f"[SDN] mode={self.MODE} run_id={RUN_ID} -> {out_dir}", flush=True)
         self.monitor_thread = hub.spawn(self._monitor)
@@ -176,8 +178,17 @@ class SeveritySDNController(app_manager.RyuApp):
                 udp_dst = None
             if udp_dst is None:
                 continue
+            key = (dp.id, udp_dst, stat.priority)
+            prev = self.prev_flow.get(key)
+            kbps = 0.0
+            if prev is not None and now > prev[1]:
+                delta = stat.byte_count - prev[0]
+                if delta < 0:                       # counter reset (rule reinstalled)
+                    delta = stat.byte_count
+                kbps = delta * 8.0 / 1000.0 / (now - prev[1])
+            self.prev_flow[key] = (stat.byte_count, now)
             rows.append(f"{now:.3f},{dp.id},{udp_dst},{stat.priority},"
-                        f"{stat.packet_count},{stat.byte_count}\n")
+                        f"{stat.packet_count},{stat.byte_count},{kbps:.1f}\n")
         if rows:
             with open(self.flow_path, "a") as f:
                 f.writelines(rows)

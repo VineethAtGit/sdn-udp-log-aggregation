@@ -229,3 +229,5 @@ results/*
 !results/.gitkeep
 
 controller_decisions.csv
+
+tmp2/

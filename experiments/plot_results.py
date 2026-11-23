@@ -9,6 +9,8 @@ plot_results.py - makes the figures for the report (saved to docs/figures/).
 Figures:
   fig_loss.png            loss % per severity, baseline vs dynamic, per condition
   fig_delay.png           average delay per severity, baseline vs dynamic
+  fig_throughput.png      throughput over time: total bottleneck traffic and delivered log
+                          throughput of HIGH vs LOW priority logs, baseline vs dynamic
   fig_burst_timeline.png  the congestion burst over time: utilization with controller
                           decisions, and per-second loss of HIGH vs LOW priority logs
 """
@@ -104,7 +106,9 @@ def burst_timeline(run_no):
         return
     with open(os.path.join(dyn, "run_info.json")) as f:
         info = json.load(f)
-    t0 = info["t_clients_start"]
+    with open(os.path.join(base, "run_info.json")) as f:
+        base_t0 = json.load(f)["t_clients_start"]
+    t0 = info["t_clients_start"]                    # each run is aligned to its OWN start time
     fs, fe = info["t_flood_start"] - t0, info["t_flood_end"] - t0
 
     fig, axes = plt.subplots(3, 1, figsize=(9, 9), sharex=True)
@@ -121,8 +125,8 @@ def burst_timeline(run_no):
     axes[0].set_ylabel("bottleneck utilization %")
     axes[0].set_title("Dynamic run: link utilization and controller decisions (lines = ON/OFF)")
 
-    for ax, d, name in ((axes[1], base, "Baseline"), (axes[2], dyn, "Dynamic")):
-        xs, series = per_second_loss(d, t0)
+    for ax, d, name, t_run in ((axes[1], base, "Baseline", base_t0), (axes[2], dyn, "Dynamic", t0)):
+        xs, series = per_second_loss(d, t_run)
         ax.plot(xs, series["high"], label="HIGH priority (CRITICAL+ERROR)", color="#d62728")
         ax.plot(xs, series["low"], label="LOW priority (WARNING/INFO/DEBUG)", color="#7f7f7f")
         ax.set_ylabel("loss % per second")
@@ -135,6 +139,63 @@ def burst_timeline(run_no):
     fig.savefig(os.path.join(FIGS, "fig_burst_timeline.png"), dpi=150)
     plt.close(fig)
     print("wrote fig_burst_timeline.png")
+
+
+def class_goodput(run_dir, t0):
+    """Delivered log throughput per second (kbps) for HIGH and LOW classes."""
+    buckets = {"high": {}, "low": {}}
+    path = os.path.join(run_dir, "throughput.csv")
+    if not os.path.exists(path):
+        return None
+    for r in read_csv(path):
+        cls = "high" if r["severity"] in HIGH else "low"
+        sec = int(r["time"]) - int(t0)
+        buckets[cls][sec] = buckets[cls].get(sec, 0.0) + float(r["throughput_kbps"])
+    xs = sorted(set(buckets["high"]) | set(buckets["low"]))
+    return xs, {c: [buckets[c].get(x, 0.0) for x in xs] for c in buckets}
+
+
+def throughput_timeline(run_no):
+    runs = {}
+    for mode in ("baseline", "dynamic"):
+        d = os.path.join(RESULTS, f"{mode}_heavy_{run_no}")
+        info_path = os.path.join(d, "run_info.json")
+        if not os.path.exists(info_path):
+            print("skipping throughput figure: need baseline_heavy_N and dynamic_heavy_N runs")
+            return
+        with open(info_path) as f:
+            runs[mode] = (d, json.load(f))
+    ref = runs["dynamic"][1]
+    fs = ref["t_flood_start"] - ref["t_clients_start"]
+    fe = ref["t_flood_end"] - ref["t_clients_start"]
+
+    fig, axes = plt.subplots(3, 1, figsize=(9, 9), sharex=True)
+    for mode, (d, info) in runs.items():
+        t0 = info["t_clients_start"]
+        stats = [(float(r["time"]) - t0, float(r["utilization"]) / 10.0)    # % of 10 Mbps -> Mbps
+                 for r in read_csv(os.path.join(d, "controller_log.csv")) if r["event"] == "STATS"]
+        axes[0].plot([x for x, _ in stats], [y for _, y in stats], label=mode, color=COLORS[mode])
+        gp = class_goodput(d, t0)
+        if gp is None:
+            continue
+        xs, series = gp
+        axes[1].plot(xs, series["high"], label=mode, color=COLORS[mode])
+        axes[2].plot(xs, series["low"], label=mode, color=COLORS[mode])
+    axes[0].axhline(10, ls="--", color="red", lw=0.8)
+    axes[0].set_ylabel("bottleneck throughput (Mbps)")
+    axes[0].set_title("Total traffic through the bottleneck (logs + flood), from controller statistics")
+    axes[1].set_ylabel("delivered kbps")
+    axes[1].set_title("Delivered HIGH-priority log throughput (CRITICAL + ERROR)")
+    axes[2].set_ylabel("delivered kbps")
+    axes[2].set_title("Delivered LOW-priority log throughput (WARNING + INFO + DEBUG)")
+    for ax in axes:
+        ax.axvspan(fs, fe, color="orange", alpha=0.15)
+        ax.legend(loc="upper right", fontsize=8)
+    axes[2].set_xlabel("seconds since clients started (orange = flood)")
+    fig.tight_layout()
+    fig.savefig(os.path.join(FIGS, "fig_throughput.png"), dpi=150)
+    plt.close(fig)
+    print("wrote fig_throughput.png")
 
 
 def main():
@@ -150,6 +211,7 @@ def main():
     grouped_bars(rows, "avg_delay_ms_mean", "avg_delay_ms_std", "average delay (ms)",
                  "Delivery delay per severity: baseline vs dynamic SDN", "fig_delay.png")
     burst_timeline(args.timeline_run)
+    throughput_timeline(args.timeline_run)
 
 
 if __name__ == "__main__":

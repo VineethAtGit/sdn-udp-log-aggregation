@@ -42,38 +42,39 @@ ports 5001, 5002 and 5003, one per severity class. The queue statistics show thr
 ## Part 3: The application without congestion (1.5 min)
 
 ```
-h5 python3 app/log_server.py --out results/demo1 --idle-timeout 5 > /tmp/srv.out 2>&1 &
-h1 python3 app/log_client.py --host-id h1 --server-ip 10.0.0.5 --rate 50 --duration 20 --out results/demo1 > /tmp/h1.out 2>&1 &
-h2 python3 app/log_client.py --host-id h2 --server-ip 10.0.0.5 --rate 50 --duration 20 --out results/demo1 > /tmp/h2.out 2>&1 &
-h3 python3 app/log_client.py --host-id h3 --server-ip 10.0.0.5 --rate 50 --duration 20 --out results/demo1 > /tmp/h3.out 2>&1 &
-h4 python3 app/log_client.py --host-id h4 --server-ip 10.0.0.5 --rate 50 --duration 20 --out results/demo1 > /tmp/h4.out 2>&1 &
+h5 python3 app/log_server.py --out results/demo1 --idle-timeout 3 > /tmp/srv.out 2>&1 &
+h1 python3 app/log_client.py --host-id h1 --server-ip 10.0.0.5 --rate 50 --duration 10 --out results/demo1 > /tmp/h1.out 2>&1 &
+h2 python3 app/log_client.py --host-id h2 --server-ip 10.0.0.5 --rate 50 --duration 10 --out results/demo1 > /tmp/h2.out 2>&1 &
+h3 python3 app/log_client.py --host-id h3 --server-ip 10.0.0.5 --rate 50 --duration 10 --out results/demo1 > /tmp/h3.out 2>&1 &
+h4 python3 app/log_client.py --host-id h4 --server-ip 10.0.0.5 --rate 50 --duration 10 --out results/demo1 > /tmp/h4.out 2>&1 &
 ```
-After about 30 s:
+After about 15 s:
 ```
 sh cat /tmp/srv.out
 sh ovs-ofctl -O OpenFlow13 dump-flows s1
 sh head -5 results/demo1/server_log.csv
 ```
-Say: "About 4000 logs sent, all received, zero loss, delay a fraction of a millisecond. The flow counters now count
-packets per severity, and each log is timestamped."
+Say: "About 2000 logs sent, all received, zero loss, delay a fraction of a millisecond, and the table also shows
+throughput per severity. The flow counters now count packets per severity, and each log is timestamped."
 
 Then `exit` in T2, Ctrl+C in T1, `sudo mn -c`.
 
 ## Part 4: Congestion, baseline versus dynamic (5 min)
 
-Use the automated runner to run both modes live under the heavy flood (about 3 minutes):
+Use the demo profile of the automated runner to run both modes live under the heavy flood (about 2 minutes):
 ```bash
-sudo python3 experiments/run_experiments.py --runs 1 --conditions heavy --force
+sudo python3 experiments/run_experiments.py --profile demo
 ```
-While it runs, explain: "It starts a fresh controller for each mode. After 15 seconds a 15 Mbps UDP flood hits the
-10 Mbps link for 30 seconds."
+While it runs, explain: "It starts a fresh controller for each mode. After 7 seconds a 15 Mbps UDP flood hits the
+10 Mbps link for 15 seconds."
 
-When it finishes:
+When it finishes it prints a side-by-side table of loss, delay and throughput per severity. Then, if asked for detail:
 ```bash
 cat results/baseline_heavy_1/server_stdout.txt
 cat results/dynamic_heavy_1/server_stdout.txt
 grep -v STATS results/dynamic_heavy_1/controller_log.csv
 cat results/dynamic_heavy_1/queue_stats_s1.txt
+head results/dynamic_heavy_1/throughput.csv
 ```
 Say: "Baseline: every severity loses about the same. Dynamic: the controller declared congestion, installed queue
 rules, and CRITICAL and ERROR loss and delay fell sharply while the low-priority classes absorbed the loss. Queue 1
@@ -86,6 +87,7 @@ dropped nothing. When the flood ended the controller removed the rules."
 Open the figures:
 - `fig_loss.png` and `fig_delay.png`: baseline versus dynamic per severity, three congestion levels, mean over 3 runs
 - `fig_burst_timeline.png`: utilization with the controller ON/OFF decisions, and per-second loss
+- `fig_throughput.png`: total bottleneck throughput and delivered log throughput of high- and low-priority logs
 
 Say: "Without congestion both modes are identical. Under congestion the controller protects the critical logs.
 Overall loss stays about the same because the link is the same size; the controller changes who loses.

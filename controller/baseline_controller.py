@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 baseline_controller.py - the comparison baseline (contract section 4).
 
